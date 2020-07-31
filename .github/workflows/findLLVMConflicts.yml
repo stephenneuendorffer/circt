@@ -1,0 +1,62 @@
+name: Check LLVM Head
+
+# The goal of this workflow is to check for conflicting LLVM/MLIR changes
+# on a nightly basis.  This will detect conflicts early and allow us to update
+# LLVM version when conflicts occur with (hopefully) minimal hassle.
+
+on:
+  workflow_dispatch:
+      name:
+        # Friendly description to be shown in the UI instead of 'name'
+        description: 'Person to greet'
+        # Default value if no value is explicitly provided
+        default: 'World'
+        # Input has to be provided for the workflow to run
+        required: true
+
+# schedule:
+    # Run at 2 am daily
+#    - cron:  '* 2 * * *'
+
+jobs:
+  build:
+    name: Build and Test
+    needs: build-llvm
+    runs-on: ubuntu-latest
+    steps:
+    - name: Configure Environment
+      run: echo "::add-path::$GITHUB_WORKSPACE/llvm/install/bin"
+    - name: Get CIRCT
+      uses: actions/checkout@v2
+      with:
+        submodules: 'true'
+    - name: Update LLVM
+      run: |
+        cd llvm
+        git remote add llvm https://github.com/llvm/llvm-project
+        git fetch llvm
+        git checkout llvm/master
+    - name: Rebuild and Install LLVM
+      id: build-llvm
+      continue-on-error:
+      run: |
+        mkdir llvm/build
+        mkdir llvm/install
+        cd llvm/build
+        cmake ../llvm -DLLVM_BUILD_EXAMPLES=OFF -DLLVM_TARGETS_TO_BUILD="host" -DCMAKE_INSTALL_PREFIX=../install -DLLVM_ENABLE_PROJECTS='mlir' -DLLVM_OPTIMIZED_TABLEGEN=ON -DLLVM_ENABLE_OCAMLDOC=OFF -DLLVM_ENABLE_BINDINGS=OFF -DLLVM_INSTALL_UTILS=ON -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DLLVM_ENABLE_LLD=ON -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_ASSERTIONS=ON
+        make check-mlir -j$(nproc)
+        cmake --build . --target install -- -j$(nproc)
+    - name: Build and Test CIRCT (Assert)
+      if: steps.build-llvm.outcome == 'success'
+      run: |
+        mkdir build_assert
+        cd build_assert
+        cmake .. -DCMAKE_BUILD_TYPE=Debug -DLLVM_ENABLE_ASSERTIONS=ON -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ -DCMAKE_LINKER=lld -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit
+        make check-circt -j$(nproc)
+    - name: Build and Test CIRCT (Release)
+      if: steps.build-llvm.outcome == 'success'
+      run: |
+        mkdir build_release
+        cd build_release
+        cmake .. -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_ASSERTIONS=OFF -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ -DCMAKE_LINKER=lld -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit
+        make check-circt -j$(nproc)
